@@ -1,18 +1,21 @@
 import pyro
+import torch
 import pyro.distributions as dist
 from torch import nn
 
-
+from network import Encoder
+from util import tfn
 
 class VAE(nn.Module):
     # by default our latent space is 50-dimensional
     # and we use 400 hidden units
-    def __init__(self, x_dim=50, z_dim=50, hidden_dim=10, p_dim=50, use_cuda=True):
+    def __init__(self, x_dim=50, z_dim=50, hidden_dim=10, p_dim=50, use_cuda=True, device='cpu'):
         super().__init__()
         # create the encoder and decoder networks
         self.encoder = Encoder(x_dim, z_dim, hidden_dim).to(device)
         self.decoder = nn.Linear(z_dim, x_dim).to(device)
         self.perturb = nn.Linear(p_dim, z_dim, bias=False).to(device)
+        self.device = device
 
         if use_cuda:
             # calling cuda() here will put all the parameters of
@@ -35,14 +38,15 @@ class VAE(nn.Module):
         with pyro.plate("data", x.shape[0]):
             # setup hyperparameters for prior p(z)
             # z_loc = x.new_zeros(torch.Size((x.shape[0], self.z_dim)))
-            z_loc = self.perturb(p)
+            p_oh = torch.nn.functional.one_hot(p, num_classes = self.perturb.in_features).float()
+            z_loc = self.perturb(p_oh)
             z_scale = x.new_ones(torch.Size((x.shape[0], self.z_dim)))
             # sample from prior (value will be sampled by guide when computing the ELBO)
             z = pyro.sample("latent", dist.Normal(z_loc, z_scale).to_event(1))
             # decode the latent code z
             loc_img = self.decoder(z)
             # score against actual images
-            pyro.sample("obs", dist.Normal(loc_img, tfn(1)).to_event(1), obs=x)
+            pyro.sample("obs", dist.Normal(loc_img, tfn(1, self.device)).to_event(1), obs=x)
 
     # define the guide (i.e. variational distribution) q(z|x)
     def guide(self, x, p):
